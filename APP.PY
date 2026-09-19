@@ -1,28 +1,25 @@
 import streamlit as st
 import pdfplumber
 import chromadb
-from sentence_transformers import SentenceTransformer
-from groq import Groq
 
 st.set_page_config(page_title="DocuChat", layout="wide")
 st.title("📄 DocuChat — Ask Your Documents")
 
-# Load models/clients once, cached across reruns
-@st.cache_resource
-def load_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+from groq import Groq
+
+# Groq API key from Streamlit Secrets
+groq_api_key = st.secrets["GROQ_API_KEY"]
+client_groq = Groq(api_key=groq_api_key)
 
 @st.cache_resource
 def get_chroma_collection():
     client = chromadb.Client()
+    # No custom embedding_function passed -> ChromaDB uses its lightweight
+    # built-in ONNX-based default embedding model (all-MiniLM-L6-v2),
+    # avoiding the need for PyTorch/sentence-transformers.
     return client.get_or_create_collection(name="documents")
 
-model = load_embedding_model()
 collection = get_chroma_collection()
-
-# Groq API key from Streamlit Secrets (set in Streamlit Cloud settings, not in code)
-groq_api_key = st.secrets["GROQ_API_KEY"]
-client_groq = Groq(api_key=groq_api_key)
 
 def extract_text_from_pdf(pdf_file):
     pages_data = []
@@ -47,14 +44,14 @@ def chunk_text(pages_data, chunk_size=100, overlap=20):
 
 def add_chunks_to_db(chunks, doc_name):
     texts = [c["text"] for c in chunks]
-    embeddings = model.encode(texts).tolist()
     ids = [f"{doc_name}_chunk_{i}" for i in range(len(chunks))]
     metadatas = [{"page": c["page_number"], "source": doc_name} for c in chunks]
-    collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
+    # Pass documents directly -> Chroma embeds them internally using its
+    # lightweight default embedding function
+    collection.add(ids=ids, documents=texts, metadatas=metadatas)
 
 def retrieve_relevant_chunks(question, top_k=4):
-    question_embedding = model.encode([question]).tolist()
-    results = collection.query(query_embeddings=question_embedding, n_results=top_k)
+    results = collection.query(query_texts=[question], n_results=top_k)
     retrieved = []
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
         retrieved.append({"text": doc, "page": meta["page"], "source": meta["source"]})
